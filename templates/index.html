@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jogos — Lobby</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo"></div>
+    <div id="roomLabel"></div>
+    <div style="margin-left:12px">
+      <button id="returnLobbyBtn" class="secondary" onclick="requestReturnToLobby()" style="display:none">Voltar ao início</button>
+    </div>
+  </header>
+  <script>window.GAME_CATALOG = {{ game_catalog|tojson }};</script>
+  <main>    <section id="home" class="screen active">
+      <div class="card hero">
+        <h1>Descubra o Tier.</h1>
+        <p>Escreva algo. Seus amigos tentam descobrir se é S, A, B, C ou F.</p>
+        <input id="nameInput" maxlength="20" placeholder="Seu nome">
+        <div class="row">
+          <button onclick="createRoom()">Criar sala</button>
+          <button class="secondary" onclick="showJoin()">Entrar em sala</button>
+        </div>
+        <div id="roomsList" class="card small"></div>
+      </div>
+    </section>
+
+    <section id="join" class="screen">
+      <div class="card">
+        <h2>Entrar em sala</h2>
+        <input id="joinCode" maxlength="5" placeholder="Código da sala">
+        <button onclick="joinRoom()">Entrar</button>
+        <button class="secondary" onclick="show('home')">Voltar</button>
+      </div>
+    </section>
+
+    <section id="lobby" class="screen">
+      <div class="card">
+        <div class="room-code">SALA <strong id="codeBig"></strong></div>
+        <h2>Jogadores</h2>
+        <div id="players"></div>
+        <div id="hostStart"></div>
+        <div id="gameControl"></div>
+        <div id="lobbyGames" class="card small" style="margin-top:12px;"></div>
+        <div id="startControl" style="margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <section id="theme" class="screen">
+      <div class="card">
+        <h2>Escolha um tema</h2>
+        <p>Cada jogador pode enviar até 3 temas, separados por vírgula. Um deles será sorteado a cada rodada.</p>
+        <input id="themeInput" maxlength="160" placeholder="Ex.: comidas, filmes, animais">
+        <button onclick="submitTheme()">Enviar temas</button>
+        <button class="secondary" onclick="requestReturnToLobby()">Voltar para o início</button>
+        <p id="themeStatus"></p>
+      </div>
+    </section>
+
+    <div id="returnLobbyModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Voltar para o início?</h3>
+        <div class="modal-actions">
+          <button onclick="voteReturnToLobby(true)">Sim</button>
+          <button class="secondary" onclick="voteReturnToLobby(false)">Não</button>
+        </div>
+      </div>
+    </div>
+
+
+    <section id="writing" class="screen">
+      <div class="card center">
+        <div class="pill">SEU RANK</div>
+        <div id="myTier" class="secret-tier"></div>
+        <h2 id="writeTheme"></h2>
+        <p>Escreva algo que faça sentido nesse tema e tente fazer seus amigos descobrirem seu rank.</p>
+        <input id="answerInput" maxlength="60" placeholder="Sua resposta">
+        <button onclick="submitAnswer()">Confirmar resposta</button>
+      </div>
+    </section>
+
+    <section id="waiting" class="screen">
+      <div class="two-col">
+        <div class="card center main-col">
+          <div class="spinner"></div>
+          <h2>É a vez de <span id="currentPlayer"></span></h2>
+          <p id="waitingTheme"></p>
+          <div style="margin-top:12px;text-align:center;">
+            <button id="returnLobbyInlineWaiting" class="secondary" onclick="requestReturnToLobby()" style="display:none">Voltar ao início</button>
+          </div>
+        </div>
+        <aside id="scoreSidebar" class="score-sidebar card">
+          <h3>Placar</h3>
+          <div id="scoreList">Carregando...</div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="game_vote" class="screen">
+      <div class="card">
+        <h2>Escolha o jogo</h2>
+        <div id="gameOptions"></div>
+        <div id="gameVoteStatus"></div>
+      </div>
+    </section>
+
+    <section id="voting" class="screen">
+      <div class="two-col">
+        <div class="card tier-card main-col">
+          <div class="theme-title" id="voteTheme"></div>
+          <div class="answer-big" id="answerBig"></div>
+          <div class="author" id="answerAuthor"></div>
+          <p class="vote-help">Selecione o Tier que você acha correto. Seu voto será enviado imediatamente.</p>
+
+          <div class="tier-list" id="tierList"></div>
+          <div class="vote-count" id="voteCount"></div>
+          <div style="margin-top:12px;text-align:center;">
+            <button id="returnLobbyInlineVoting" class="secondary" onclick="requestReturnToLobby()" style="display:none">Voltar ao início</button>
+          </div>
+        </div>
+
+        <aside id="scoreSidebar" class="score-sidebar card">
+          <h3>Placar</h3>
+          <div id="scoreList">Nenhuma pontuação</div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="impostor" class="screen">
+      <div class="card impostor-card">
+        <h2>Impostor</h2>
+        <p id="impostorInfo"></p>
+        <div id="impostorWord" class="impostor-word"></div>
+        <textarea id="impostorHint" class="impostor-hint-input" placeholder="Escreva sua dica"></textarea>
+        <div class="impostor-actions">
+          <button onclick="submitImpostorHint()">Enviar dica</button>
+          <button class="secondary" onclick="impostorShowHints()">Mostrar dicas recebidas</button>
+        </div>
+        <h3>Chat de dicas (histórico)</h3>
+        <div id="impostorHints" class="impostor-hints"></div>
+        <div id="impostorVotes" class="impostor-votes"></div>
+      </div>
+    </section>
+
+    <section id="adedonha" class="screen">
+      <div class="card">
+        <h2>Adedonha</h2>
+        <p id="adedonhaLetter"></p>
+        <div id="adedonhaCategories"></div>
+        <div id="adedonhaInputs"></div>
+        <button onclick="submitAdedonha()">Enviar respostas</button>
+        <div id="adedonhaResults"></div>
+      </div>
+    </section>
+
+    <section id="monopoly" class="screen">
+      <div class="card">
+        <h2>Monopoli</h2>
+        <p id="monopolyMessage"></p>
+        <div id="monopolyBoard" class="monopoly-board"></div>
+        <div id="monopolyPlayers"></div>
+        <div class="row">
+          <button onclick="monopolyRoll()">Rolar dados</button>
+          <button onclick="monopolyBuy()">Comprar</button>
+          <button class="secondary" onclick="monopolyEndTurn()">Terminar turno</button>
+        </div>
+        <div id="monopolyLast"></div>
+      </div>
+    </section>
+
+    <section id="result" class="screen">
+      <div class="card">
+        <div class="pill">RESULTADO</div>
+        <h2 id="resultAnswer"></h2>
+        <p>Autor: <strong id="resultAuthor"></strong></p>
+        <div class="correct-box">Tier correto: <strong id="correctTier"></strong></div>
+        <div id="resultPlayers"></div>
+        <div id="resultScores"></div>
+        <button id="nextButton" onclick="nextTurn()">Próximo turno</button>
+      </div>
+    </section>
+
+    <section id="finished" class="screen">
+      <div class="card">
+        <h1>🏆 Fim da partida</h1>
+        <div id="finalScores"></div>
+        <button onclick="location.reload()">Recomeçar</button>
+      </div>
+    </section>
+
+    <div id="error" class="toast"></div>
+  </main>
+</div>
+
+<button id="returnLobbyFloating" class="secondary" onclick="requestReturnToLobby()" style="display:none;position:fixed;right:20px;bottom:20px;z-index:300;padding:12px 16px;border-radius:12px;">Voltar ao início</button>
+
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
