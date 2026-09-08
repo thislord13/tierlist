@@ -65,3 +65,7 @@ Esta é uma primeira versão funcional/protótipo. O próximo passo recomendado 
 - modo público/privado;
 - proteção contra spam;
 - deploy com Gunicorn/eventlet/gevent ou servidor ASGI apropriado.
+
+
+so baixe o python 3 baixe os requirements e inicie o .bat
+
