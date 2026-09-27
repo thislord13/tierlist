@@ -1,9 +1,10 @@
-from flask import Flask, render_template, request
+from flask import Flask, abort, redirect, render_template, request
 from flask_socketio import SocketIO, join_room, emit
 import random
 import string
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "tierlist-secret"
@@ -328,6 +329,17 @@ def index():
         game_catalog=GAME_CATALOG,
         static_version=static_version,
     )
+
+
+@app.route("/monopoli")
+def monopoli_entry():
+    hostname = urlsplit(request.host_url).hostname
+    if not hostname:
+        abort(400, description="Não foi possível determinar o endereço do servidor.")
+
+    authority = f"[{hostname}]:5001" if ":" in hostname else f"{hostname}:5001"
+    monopoly_url = urlunsplit(("http", authority, "/", "", ""))
+    return redirect(monopoly_url)
 
 
 # ==========================================================

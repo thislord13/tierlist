@@ -4,5 +4,7 @@ credentials-file: .cloudflared\214c11cf-c37f-4ef9-ab07-cfc32c02a8aa.json
 ingress:
   - hostname: jogo.coldiceserver.com
     service: http://127.0.0.1:5000
+  - hostname: monopoli.coldiceserver.com
+    service: http://127.0.0.1:5001
 
   - service: http_status:404
