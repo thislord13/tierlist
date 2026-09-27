@@ -602,3 +602,142 @@ button.secondary:hover {
 @media (max-width: 420px) {
   .lobby-game-item { width: 46%; min-width: 140px; height: auto; }
 }
+
+.time-game-card {
+  max-width: 680px;
+}
+
+.time-target {
+  margin: 24px 0;
+  color: var(--accent-btn);
+  font-size: clamp(36px, 8vw, 64px);
+  font-weight: 900;
+}
+
+.time-stop-button {
+  position: relative;
+  z-index: 151;
+  width: min(100%, 520px);
+  min-height: 180px;
+  margin: 0 auto;
+  border: 4px solid rgba(255, 255, 255, 0.15);
+  border-radius: 28px;
+  background: linear-gradient(145deg, #34d399, #059669);
+  color: #042217;
+  font-size: clamp(28px, 6vw, 44px);
+  font-weight: 900;
+  letter-spacing: 1px;
+  touch-action: manipulation;
+}
+
+.time-stop-button:hover:not(:disabled) {
+  background: linear-gradient(145deg, #6ee7b7, #10b981);
+}
+
+.time-stop-button.timer-running,
+.time-stop-button.timer-running:hover:not(:disabled) {
+  background: linear-gradient(145deg, #f87171, #dc2626);
+  color: #ffffff;
+  box-shadow: 0 10px 30px rgba(220, 38, 38, 0.3);
+}
+
+.time-stop-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.room-chat {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 150;
+}
+
+.room-chat-toggle {
+  min-width: 150px;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.35);
+}
+
+.room-chat-panel {
+  position: absolute;
+  right: 0;
+  bottom: 64px;
+  width: min(360px, calc(100vw - 32px));
+  height: min(480px, calc(100vh - 120px));
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+  background: var(--card-bg);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+
+.room-chat-panel.hidden {
+  display: none;
+}
+
+.room-chat-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.room-chat-heading button {
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 20px;
+}
+
+.room-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.room-chat-message {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+  border-radius: 10px;
+  background: var(--input-bg);
+}
+
+.room-chat-meta {
+  margin-bottom: 3px;
+  color: var(--accent-btn);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.room-chat-form {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--card-border);
+}
+
+.room-chat-form input {
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+}
+
+.room-chat-form button {
+  margin: 0;
+  padding: 10px 12px;
+}
+
+@media (max-width: 600px) {
+  .room-chat {
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .time-stop-button {
+    min-height: 150px;
+  }
+}

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Jogos — Lobby</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
 </head>
 <body>
 <div id="app">
@@ -47,6 +47,15 @@
         <div id="gameControl"></div>
         <div id="lobbyGames" class="card small" style="margin-top:12px;"></div>
         <div id="startControl" style="margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <section id="room_waiting" class="screen">
+      <div class="card center">
+        <div class="pill">SALA DE ESPERA</div>
+        <h2>A partida está em andamento</h2>
+        <p id="roomWaitingStatus">Você será incluído na próxima rodada. Enquanto espera, converse pelo chat da sala.</p>
+        <div id="roomWaitingCount"></div>
       </div>
     </section>
 
@@ -172,6 +181,20 @@
       </div>
     </section>
 
+    <section id="acerte_tempo" class="screen">
+      <div class="card center time-game-card">
+        <div class="pill">ACERTE O TEMPO</div>
+        <h2>Quanto tempo pareceu?</h2>
+        <p>Toque em iniciar e, sem olhar para o relógio, toque novamente quando achar que chegou ao tempo-alvo.</p>
+        <div id="timeTarget" class="time-target">-- s</div>
+        <button id="timeStopButton" class="time-stop-button" onclick="timeGameButtonAction()" disabled>INICIAR CRONÔMETRO</button>
+        <p class="time-keyboard-hint">Também pode usar a barra de espaço para iniciar e parar.</p>
+        <p id="timeGameStatus" aria-live="polite">Preparando a rodada...</p>
+        <p id="timeNextRoundStatus" aria-live="polite"></p>
+        <div id="timeGameResults"></div>
+      </div>
+    </section>
+
     <section id="result" class="screen">
       <div class="card">
         <div class="pill">RESULTADO</div>
@@ -194,11 +217,26 @@
 
     <div id="error" class="toast"></div>
   </main>
+
+  <div id="roomChat" class="room-chat" style="display:none">
+    <button id="roomChatToggle" class="room-chat-toggle" type="button" onclick="toggleRoomChat()">Chat da sala</button>
+    <section id="roomChatPanel" class="room-chat-panel hidden" aria-label="Chat da sala">
+      <div class="room-chat-heading">
+        <strong>Chat da sala</strong>
+        <button class="secondary" type="button" aria-label="Fechar chat" onclick="toggleRoomChat()">×</button>
+      </div>
+      <div id="roomChatMessages" class="room-chat-messages" aria-live="polite"></div>
+      <form class="room-chat-form" onsubmit="sendRoomChatMessage(event)">
+        <input id="roomChatInput" maxlength="300" autocomplete="off" placeholder="Escreva uma mensagem">
+        <button type="submit">Enviar</button>
+      </form>
+    </section>
+  </div>
 </div>
 
 <button id="returnLobbyFloating" class="secondary" onclick="requestReturnToLobby()" style="display:none;position:fixed;right:20px;bottom:20px;z-index:300;padding:12px 16px;border-radius:12px;">Voltar ao início</button>
 
 <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="{{ url_for('static', filename='app.js', v=static_version) }}"></script>
 </body>
 </html>

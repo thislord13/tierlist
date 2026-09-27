@@ -46,6 +46,44 @@ function error(msg) {
   setTimeout(() => el.style.display = "none", 3000);
 }
 
+function enableRoomChat(messages) {
+  document.getElementById("roomChat").style.display = "block";
+  const list = document.getElementById("roomChatMessages");
+  list.replaceChildren();
+  (messages || []).forEach(appendRoomChatMessage);
+}
+
+function appendRoomChatMessage(message) {
+  const list = document.getElementById("roomChatMessages");
+  const entry = document.createElement("div");
+  entry.className = "room-chat-message";
+  const header = document.createElement("div");
+  header.className = "room-chat-meta";
+  header.textContent = `${message.player} · ${message.time}`;
+  const body = document.createElement("div");
+  body.textContent = message.message;
+  entry.append(header, body);
+  list.appendChild(entry);
+  list.scrollTop = list.scrollHeight;
+}
+
+function toggleRoomChat() {
+  const panel = document.getElementById("roomChatPanel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    document.getElementById("roomChatInput").focus();
+  }
+}
+
+function sendRoomChatMessage(event) {
+  event.preventDefault();
+  const input = document.getElementById("roomChatInput");
+  const message = input.value.trim();
+  if (!message) return;
+  socket.emit("chat_send", {code: roomCode, message});
+  input.value = "";
+}
+
 function name() {
   return document.getElementById("nameInput").value.trim() || "Jogador";
 }
@@ -75,15 +113,35 @@ socket.on("room_created", data => {
   document.getElementById("roomLabel").textContent = "Sala " + roomCode;
   document.getElementById("codeBig").textContent = roomCode;
   show("lobby");
+  enableRoomChat([]);
 });
 
 socket.on("joined", data => {
   roomCode = data.code;
   document.getElementById("roomLabel").textContent = "Sala " + roomCode;
-  show("lobby");
+  window.waitingForRound = Boolean(data.waiting);
+  if (data.waiting) {
+    show("room_waiting");
+    document.getElementById("roomChatPanel").classList.remove("hidden");
+  } else if (data.intermission) {
+    show(data.game === "tier_guess" ? "result" : "acerte_tempo");
+  } else {
+    show("lobby");
+  }
+  enableRoomChat([]);
 });
 
 socket.on("error_message", data => error(data.message));
+socket.on("chat_history", data => enableRoomChat(data.messages));
+socket.on("chat_message", appendRoomChatMessage);
+socket.on("waiting_room_update", data => {
+  document.getElementById("roomWaitingStatus").textContent = data.message;
+  document.getElementById("roomWaitingCount").textContent =
+    `${data.players_waiting} pessoa(s) aguardando para entrar na próxima rodada.`;
+});
+socket.on("late_player_admitted", () => {
+  window.waitingForRound = false;
+});
 
 function renderLobbyHostControls(room) {
   isHost = room.host === myId;
@@ -110,8 +168,27 @@ socket.on("room_update", room => {
   window.currentRoom = room;
   roomCode = room.code;
   isHost = room.host === myId;
+  document.getElementById("roomChat").style.bottom = room.started ? "82px" : "";
   window.lastSelectedGame = room.current_game || null;
   window.lastStartedGame = room.started && room.current_game ? room.current_game : null;
+  if (window.waitingForRound) {
+    show("room_waiting");
+    document.getElementById("roomWaitingCount").textContent =
+      `${room.waiting_player_count || 0} pessoa(s) aguardando para entrar na próxima rodada.`;
+  }
+  if (
+    !window.waitingForRound
+    &&
+    room.current_game === "acerte_tempo"
+    && room.game_phase === "acerte_tempo_playing"
+    && room.acerte_tempo
+  ) {
+    prepareAcerteTempo(
+      room.acerte_tempo,
+      window.timeClockState === "submitted" || window.timeGameFinished
+    );
+    show("acerte_tempo");
+  }
   document.getElementById("roomLabel").textContent = "Sala " + room.code;
   document.getElementById("codeBig").textContent = room.code;
 
@@ -128,7 +205,9 @@ socket.on("room_update", room => {
   const riV = document.getElementById('returnLobbyInlineVoting');
   const riW = document.getElementById('returnLobbyInlineWaiting');
   if (rb) rb.style.display = room.started ? 'inline-block' : 'none';
-  if (rf) rf.style.display = room.started ? 'inline-block' : 'none';
+  if (rf) {
+    rf.style.display = room.started && room.current_game !== "acerte_tempo" ? 'inline-block' : 'none';
+  }
   if (riV) riV.style.display = room.started ? 'inline-block' : 'none';
   if (riW) riW.style.display = room.started ? 'inline-block' : 'none';
 
@@ -285,6 +364,7 @@ socket.on("vote_update", data => {
 });
 
 socket.on("round_result", data => {
+  if (window.waitingForRound) return;
   document.getElementById("resultAnswer").textContent = data.answer;
   document.getElementById("resultAuthor").textContent = data.author;
   document.getElementById("correctTier").textContent = data.correct;
@@ -306,7 +386,7 @@ socket.on("round_result", data => {
   const nextButton = document.getElementById("nextButton");
   nextButton.style.display = "none";
 
-  let countdown = 10;
+  let countdown = data.seconds_remaining ?? 10;
   let countdownEl = document.getElementById("countdown");
   if (!countdownEl) {
     countdownEl = document.createElement("p");
@@ -420,6 +500,8 @@ function renderLobbyGames(room) {
       iconHtml = '<div class="game-icon">🧐</div>';
     } else if (id === 'tier_guess') {
       iconHtml = '<div class="game-icon">🎯</div>';
+    } else if (id === 'acerte_tempo') {
+      iconHtml = '<div class="game-icon">⏱</div>';
     } else {
       iconHtml = '<div class="game-icon">🎮</div>';
     }
@@ -486,7 +568,155 @@ socket.on('start_game', data => {
     show('impostor');
   } else if (data.game === 'adedonha') {
     show('adedonha');
+  } else if (data.game === 'acerte_tempo') {
+    show('acerte_tempo');
   }
+});
+
+socket.on("acerte_tempo_start", data => {
+  prepareAcerteTempo(data, true);
+  show("acerte_tempo");
+});
+
+function prepareAcerteTempo(data, forceReset = false) {
+  document.getElementById("timeTarget").textContent =
+    `${data.target.toLocaleString("pt-BR", {minimumFractionDigits: 3, maximumFractionDigits: 3})} s`;
+  if (!forceReset && window.timeGameTarget === data.target) return;
+
+  clearInterval(window.timeNextRoundCountdown);
+  window.timeGameTarget = data.target;
+  window.timeClockState = "idle";
+  window.timeGameFinished = false;
+  document.getElementById("timeNextRoundStatus").textContent = "";
+  const button = document.getElementById("timeStopButton");
+  button.disabled = false;
+  button.classList.remove("timer-running");
+  button.textContent = "INICIAR CRONÔMETRO";
+  document.getElementById("timeGameStatus").textContent = `0/${data.total} jogadores marcaram`;
+  document.getElementById("timeGameResults").innerHTML = "";
+}
+
+function timeGameButtonAction() {
+  const button = document.getElementById("timeStopButton");
+  if (button.disabled || !roomCode || !socket.connected) {
+    if (!socket.connected) error("Conexão instável. Aguarde reconectar para jogar.");
+    return;
+  }
+
+  if (window.timeClockState === "idle") {
+    window.timeClockState = "starting";
+    button.disabled = true;
+    button.textContent = "INICIANDO...";
+    socket.timeout(5000).emit("acerte_tempo_begin", {code: roomCode}, (timeoutError, response) => {
+      if (timeoutError || !response || !response.ok) {
+        window.timeClockState = "idle";
+        button.disabled = false;
+        button.classList.remove("timer-running");
+        button.textContent = "INICIAR CRONÔMETRO";
+        error(response && response.message ? response.message : "Não foi possível iniciar. Tente novamente.");
+        return;
+      }
+
+      window.timeClockState = "running";
+      button.disabled = false;
+      button.classList.add("timer-running");
+      button.textContent = "CLIQUE PARA PARAR";
+      document.getElementById("timeGameStatus").textContent = "Cronômetro iniciado. Toque novamente para parar.";
+    });
+    return;
+  }
+
+  if (window.timeClockState !== "running") return;
+  window.timeClockState = "stopping";
+  button.disabled = true;
+  button.textContent = "CONFIRMANDO...";
+  socket.timeout(5000).emit("acerte_tempo_stop", {code: roomCode}, (timeoutError, response) => {
+    if (window.timeGameFinished) return;
+    if (timeoutError || !response || !response.ok) {
+      window.timeClockState = "running";
+      button.disabled = false;
+      button.classList.add("timer-running");
+      button.textContent = "CLIQUE PARA PARAR";
+      error(response && response.message ? response.message : "Não foi possível confirmar. Tente novamente.");
+      return;
+    }
+
+    window.timeClockState = "submitted";
+    button.classList.remove("timer-running");
+    button.textContent = "TEMPO MARCADO";
+    document.getElementById("timeGameStatus").textContent = "Aguardando os outros jogadores...";
+  });
+}
+
+document.addEventListener("keydown", event => {
+  if (
+    event.code !== "Space"
+    || event.repeat
+    || event.ctrlKey
+    || event.altKey
+    || event.metaKey
+    || !document.getElementById("acerte_tempo").classList.contains("active")
+  ) {
+    return;
+  }
+
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.isContentEditable || target.closest("input, textarea, select, [contenteditable='true']")) {
+    return;
+  }
+  const interactiveTarget = target.closest("button, a, [role='button']");
+  if (interactiveTarget && interactiveTarget.id !== "timeStopButton") {
+    return;
+  }
+
+  event.preventDefault();
+  timeGameButtonAction();
+});
+
+socket.on("acerte_tempo_progress", data => {
+  document.getElementById("timeGameStatus").textContent =
+    `${data.submitted}/${data.total} jogadores marcaram`;
+});
+
+socket.on("acerte_tempo_result", data => {
+  window.timeGameFinished = true;
+  clearInterval(window.timeNextRoundCountdown);
+  let secondsLeft = data.seconds_remaining ?? 8;
+  const countdown = document.getElementById("timeNextRoundStatus");
+  countdown.textContent = secondsLeft > 0
+    ? `Nova rodada em ${secondsLeft} segundos...`
+    : "Iniciando nova rodada...";
+  if (secondsLeft > 0) {
+    window.timeNextRoundCountdown = setInterval(() => {
+      secondsLeft -= 1;
+      countdown.textContent = secondsLeft > 0
+        ? `Nova rodada em ${secondsLeft} segundos...`
+        : "Iniciando nova rodada...";
+      if (secondsLeft <= 0) clearInterval(window.timeNextRoundCountdown);
+    }, 1000);
+  }
+  const winners = data.results.filter(result => result.winner);
+  const formatSeconds = seconds =>
+    seconds.toLocaleString("pt-BR", {minimumFractionDigits: 3, maximumFractionDigits: 3});
+  document.getElementById("timeGameStatus").textContent = winners.length > 1
+    ? `Empate! ${winners.map(result => result.player).join(", ")} ganharam 1 ponto.`
+    : `${winners[0].player} ganhou 1 ponto!`;
+  document.getElementById("timeStopButton").disabled = true;
+  document.getElementById("timeStopButton").classList.remove("timer-running");
+  window.timeClockState = "submitted";
+  document.getElementById("timeGameResults").innerHTML =
+    `<h3>Resultado — alvo: ${formatSeconds(data.target)} s</h3>` +
+    data.results.map(result =>
+      `<div class="result-row ${result.winner ? "good" : ""}">
+        <span>${escapeHtml(result.player)}${result.winner ? " — vencedor" : ""}</span>
+        <span>${formatSeconds(result.guess)} s (diferença: ${formatSeconds(result.difference)} s)</span>
+      </div>`
+    ).join("") +
+    "<h3>Placar</h3>" +
+    data.scores.map((score, index) =>
+      `<div class="result-row"><span>${index + 1}º ${escapeHtml(score.name)}</span><b>${score.score} pts</b></div>`
+    ).join("");
 });
 
 // Ensure lobby games render when receiving room update
@@ -824,4 +1054,3 @@ function startMonopolyDirect() {
   if (!roomCode) return error('Você precisa estar em uma sala.');
   socket.emit('start_game_vote', {code: roomCode, options: ['monopoly']});
 }
-

@@ -3,6 +3,6 @@ credentials-file: .cloudflared\214c11cf-c37f-4ef9-ab07-cfc32c02a8aa.json
 
 ingress:
   - hostname: jogo.coldiceserver.com
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
 
   - service: http_status:404

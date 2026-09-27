@@ -2,9 +2,12 @@ from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room, emit
 import random
 import string
+import time
+from pathlib import Path
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "tierlist-secret"
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 socketio = SocketIO(
     app,
@@ -28,6 +31,7 @@ MAX_TEMAS_POR_JOGADOR = 3
 # Catálogo simples de jogos
 GAME_CATALOG = {
     "tier_guess": "Tier Guess",
+    "acerte_tempo": "Acerte o Tempo",
 }
 
 
@@ -56,6 +60,7 @@ def public_room(room):
             }
             for p in room["players"].values()
         ],
+        "waiting_player_count": len(room.get("waiting_players", {})),
         "started": room["started"],
         "phase": room.get("phase", "lobby"),
         "theme": room.get("theme"),
@@ -66,6 +71,15 @@ def public_room(room):
         "current_game": room.get("current_game"),
         "game_phase": room.get("game_phase"),
         "previews": room.get("previews", {}),
+        "duvide": room.get("duvide"),
+        "acerte_tempo": (
+            {
+                "target": room["acerte_tempo"]["target"],
+                "total": len(room["players"]),
+            }
+            if room.get("acerte_tempo")
+            else None
+        ),
     }
 
 
@@ -128,6 +142,8 @@ def start_turn(room):
     room["votes"] = {}
     room["confirmed_votes"] = {}
     room["submitted"] = False
+    room["round_result"] = None
+    room["round_result_deadline"] = None
     room["phase"] = "writing"
 
     # Envia informações para todos
@@ -162,6 +178,7 @@ def start_turn(room):
 
 def reset_room_to_lobby(room):
     """Reseta a partida para o lobby preservando pontuação da sala."""
+    admit_waiting_players(room)
     room["started"] = False
     room["phase"] = "lobby"
     room["turn"] = None
@@ -180,6 +197,7 @@ def reset_room_to_lobby(room):
     room["themes"] = {}
     room["current_game"] = None
     room["game_phase"] = None
+    room.pop("acerte_tempo", None)
     room["pending_return_vote"] = False
     room["return_votes"] = {}
     broadcast_room(room)
@@ -301,7 +319,15 @@ def finish_theme_collection(room):
 @app.route("/")
 def index():
     # Passa o catálogo de jogos para o cliente renderizar na tela de lobby
-    return render_template("index.html", game_catalog=GAME_CATALOG)
+    static_version = max(
+        Path(app.static_folder, filename).stat().st_mtime_ns
+        for filename in ("app.js", "style.css")
+    )
+    return render_template(
+        "index.html",
+        game_catalog=GAME_CATALOG,
+        static_version=static_version,
+    )
 
 
 # ==========================================================
@@ -329,6 +355,8 @@ def create_room(data):
                 "token": data.get("token")
             }
         },
+
+        "waiting_players": {},
 
         "started": False,
 
@@ -365,6 +393,10 @@ def create_room(data):
         "confirmed_votes": {},
 
         "submitted": False,
+        "round_result": None,
+        "round_result_deadline": None,
+
+        "chat_messages": [],
     }
 
     join_room(room_code)
@@ -375,6 +407,7 @@ def create_room(data):
             "code": room_code
         }
     )
+    emit("chat_history", {"messages": []}, to=request.sid)
 
     broadcast_room(rooms[room_code])
     broadcast_rooms_list()
@@ -404,7 +437,27 @@ def join(data):
 
     room = rooms[room_code]
 
-    if room["started"]:
+    waiting_for_round = False
+    intermission = False
+    can_join_acerte_tempo = (
+        room.get("current_game") == "acerte_tempo"
+        and room.get("game_phase") in ("acerte_tempo_playing", "acerte_tempo_finished")
+    )
+    can_join_tier_list = (
+        room.get("current_game") == "tier_guess"
+        and room.get("phase") in ("writing", "voting", "result", "themes")
+    )
+    waiting_for_round = (
+        can_join_acerte_tempo and room.get("game_phase") == "acerte_tempo_playing"
+    ) or (
+        can_join_tier_list and room.get("phase") in ("writing", "voting", "themes")
+    )
+    intermission = (
+        can_join_acerte_tempo and room.get("game_phase") == "acerte_tempo_finished"
+    ) or (
+        can_join_tier_list and room.get("phase") == "result"
+    )
+    if room["started"] and not (can_join_acerte_tempo or can_join_tier_list):
 
         emit(
             "error_message",
@@ -415,7 +468,7 @@ def join(data):
 
         return
 
-    if len(room["players"]) >= 20:
+    if len(room["players"]) + len(room.get("waiting_players", {})) >= 20:
 
         emit(
             "error_message",
@@ -426,21 +479,70 @@ def join(data):
 
         return
 
-    room["players"][request.sid] = {
+    player = {
         "id": request.sid,
         "name": name,
         "score": 0,
         "token": data.get("token")
     }
 
+    if waiting_for_round:
+        room.setdefault("waiting_players", {})[request.sid] = player
+    else:
+        room["players"][request.sid] = player
+
     join_room(room_code)
 
     emit(
         "joined",
         {
-            "code": room_code
+            "code": room_code,
+            "waiting": waiting_for_round,
+            "intermission": intermission,
+            "game": room.get("current_game"),
         }
     )
+    emit("chat_history", {"messages": room.get("chat_messages", [])}, to=request.sid)
+
+    if intermission:
+        if room["current_game"] == "acerte_tempo":
+            game = room["acerte_tempo"]
+            result = dict(game["result"])
+            result["scores"] = sorted(
+                [
+                    {"name": p["name"], "score": p["score"]}
+                    for p in room["players"].values()
+                ],
+                key=lambda score: (-score["score"], score["name"].lower()),
+            )
+            result["seconds_remaining"] = max(
+                0,
+                int(game["next_round_at"] - time.monotonic() + 0.999),
+            )
+            emit("acerte_tempo_result", result, to=request.sid)
+        else:
+            result = dict(room["round_result"])
+            result["scores"] = sorted(
+                [
+                    {"name": p["name"], "score": p["score"]}
+                    for p in room["players"].values()
+                ],
+                key=lambda score: (-score["score"], score["name"].lower()),
+            )
+            result["seconds_remaining"] = max(
+                0,
+                int(room["round_result_deadline"] - time.monotonic() + 0.999),
+            )
+            emit("round_result", result, to=request.sid)
+    elif waiting_for_round:
+        emit(
+            "waiting_room_update",
+            {
+                "players_waiting": len(room["waiting_players"]),
+                "message": "Você entrou na sala de espera. Será incluído na próxima rodada.",
+            },
+            to=request.sid,
+        )
 
     broadcast_room(room)
     broadcast_rooms_list()
@@ -454,6 +556,41 @@ def list_rooms():
         [public_room(r) for r in rooms.values()],
         to=request.sid
     )
+
+
+@socketio.on("chat_send")
+def chat_send(data):
+    room = rooms.get(data.get("code"))
+    if (
+        not room
+        or (
+            request.sid not in room["players"]
+            and request.sid not in room.get("waiting_players", {})
+        )
+    ):
+        return
+
+    message = data.get("message")
+    if not isinstance(message, str):
+        emit("error_message", {"message": "Mensagem inválida."})
+        return
+
+    message = message.strip()[:300]
+    if not message:
+        emit("error_message", {"message": "Digite uma mensagem."})
+        return
+
+    chat_message = {
+        "player": (
+            room["players"].get(request.sid)
+            or room["waiting_players"][request.sid]
+        )["name"],
+        "message": message,
+        "time": time.strftime("%H:%M"),
+    }
+    room.setdefault("chat_messages", []).append(chat_message)
+    room["chat_messages"] = room["chat_messages"][-100:]
+    socketio.emit("chat_message", chat_message, to=room["code"])
 
 
 # ==========================================================
@@ -537,13 +674,14 @@ def start_game(room, game_id):
     room["phase"] = "playing"
     room["game_phase"] = "playing"
 
-    if game_id == "impostor":
-        start_impostor(room)
-    elif game_id == "adedonha":
-        start_adedonha(room)
-    elif game_id == "monopoly":
-        # inicia o mini-jogo Monopoly
-        start_monopoly(room)
+    socketio.emit(
+        "start_game",
+        {"game": game_id, "name": GAME_CATALOG.get(game_id)},
+        to=room["code"]
+    )
+
+    if game_id == "acerte_tempo":
+        start_acerte_tempo(room)
     else:
         # jogo padrão (tier guess) - inicia fluxo de temas/turnos (Tier Guess)
         room["current_game"] = "tier_guess"
@@ -831,15 +969,17 @@ def host_start_game(data):
     game = room.get("current_game")
     if not game:
         return
+    if room.get("started"):
+        return
+    if game == "acerte_tempo" and len(room["players"]) < 2:
+        emit("error_message", {"message": "É preciso ter pelo menos 2 jogadores."})
+        return
 
     print(f"host_start_game received from {request.sid} for room {room['code']} game={game}")
 
     # Inicia o jogo escolhido
     start_game(room, game)
     print(f"start_game called for room {room['code']} game={game}")
-
-    # Emite evento de início genérico
-    socketio.emit("start_game", {"game": game, "name": GAME_CATALOG.get(game)}, to=room["code"]) 
     broadcast_room(room)
 
 
@@ -1212,6 +1352,7 @@ def vote(data):
         )
 
         room["phase"] = "result"
+        admit_waiting_players(room)
 
         # Ranking
         scores = [
@@ -1230,27 +1371,26 @@ def vote(data):
         # Verifica se acabou a partida pelo critério de temas usados ao menos 2 vezes.
         game_over = all_themes_used_at_least_twice(room)
 
-        socketio.emit(
-            "round_result",
-            {
-                "answer": room["answer"],
+        room["round_result_deadline"] = time.monotonic() + 10
+        room["round_result"] = {
+            "answer": room["answer"],
 
-                "author": room["players"][author]["name"],
+            "author": room["players"][author]["name"],
 
-                "correct": correct,
+            "correct": correct,
 
-                "results": results,
+            "results": results,
 
-                "scores": scores,
+            "scores": scores,
 
-                "author_points": author_hits * 2,
+            "author_points": author_hits * 2,
 
-                "hits": author_hits,
+            "hits": author_hits,
 
-                "game_over": game_over,
-            },
-            to=room["code"]
-        )
+            "game_over": game_over,
+            "seconds_remaining": 10,
+        }
+        socketio.emit("round_result", room["round_result"], to=room["code"])
 
         # Broadcast updated room so sidebars get latest scores
         broadcast_room(room)
@@ -1350,6 +1490,12 @@ def disconnect():
 
     for room_code, room in list(rooms.items()):
 
+        if request.sid in room.get("waiting_players", {}):
+            del room["waiting_players"][request.sid]
+            broadcast_room(room)
+            broadcast_rooms_list()
+            continue
+
         if request.sid not in room["players"]:
             continue
 
@@ -1360,15 +1506,19 @@ def disconnect():
         room.get("previews", {}).pop(request.sid, None)
         room.get("confirmed_votes", {}).pop(request.sid, None)
         room.get("votes", {}).pop(request.sid, None)
+        room.get("acerte_tempo", {}).get("guesses", {}).pop(request.sid, None)
+        room.get("acerte_tempo", {}).get("timer_starts", {}).pop(request.sid, None)
 
         # Remove tema dele
         room["themes"].pop(request.sid, None)
 
         # Se não houver mais jogadores
         if not room["players"]:
-
-            del rooms[room_code]
-
+            if room.get("current_game") == "acerte_tempo" and room.get("waiting_players"):
+                admit_waiting_players(room)
+                start_acerte_tempo(room)
+            else:
+                del rooms[room_code]
             continue
 
         # Se o host saiu
@@ -1377,6 +1527,14 @@ def disconnect():
             room["host"] = next(
                 iter(room["players"])
             )
+
+        if (
+            room.get("current_game") == "acerte_tempo"
+            and room.get("game_phase") == "acerte_tempo_playing"
+            and room["players"]
+            and len(room["acerte_tempo"]["guesses"]) == len(room["players"])
+        ):
+            finish_acerte_tempo_round(room)
 
         # Se o jogador que estava respondendo saiu
         if (
@@ -1397,6 +1555,300 @@ def disconnect():
 
         broadcast_room(room)
         broadcast_rooms_list()
+
+
+# ==========================================================
+# DUVIDE (modo de tempo oculto)
+# ==========================================================
+
+
+def start_acerte_tempo(room):
+    room["current_game"] = "acerte_tempo"
+    room["phase"] = "acerte_tempo"
+    room["game_phase"] = "acerte_tempo_playing"
+    room["acerte_tempo"] = {
+        "target": random.randint(500, 10000) / 1000,
+        "timer_starts": {},
+        "guesses": {},
+    }
+    socketio.emit(
+        "acerte_tempo_start",
+        {"target": room["acerte_tempo"]["target"], "total": len(room["players"])},
+        to=room["code"],
+    )
+    broadcast_room(room)
+
+
+def admit_waiting_players(room):
+    waiting_players = room.get("waiting_players", {})
+    if not waiting_players:
+        return
+
+    for sid, player in list(waiting_players.items()):
+        room["players"][sid] = player
+        socketio.emit("late_player_admitted", {}, to=sid)
+    waiting_players.clear()
+    broadcast_room(room)
+    broadcast_rooms_list()
+
+
+def finish_acerte_tempo_round(room):
+    game = room["acerte_tempo"]
+    target = game["target"]
+    guesses = game["guesses"]
+    if not guesses:
+        return
+
+    differences = {
+        sid: abs(elapsed - target)
+        for sid, elapsed in guesses.items()
+    }
+    best_difference = min(differences.values())
+    winners = {
+        sid for sid, difference in differences.items()
+        if difference == best_difference
+    }
+
+    results = []
+    for sid, elapsed in guesses.items():
+        is_winner = sid in winners
+        if is_winner:
+            room["players"][sid]["score"] += 1
+        results.append({
+            "player": room["players"][sid]["name"],
+            "guess": elapsed,
+            "difference": differences[sid],
+            "winner": is_winner,
+        })
+    results.sort(key=lambda result: (result["difference"], result["player"].lower()))
+    game["status"] = "finished"
+    room["game_phase"] = "acerte_tempo_finished"
+
+    scores = sorted(
+        [
+            {"name": player["name"], "score": player["score"]}
+            for player in room["players"].values()
+        ],
+        key=lambda player: (-player["score"], player["name"].lower()),
+    )
+    game["result"] = {
+        "target": target,
+        "results": results,
+        "scores": scores,
+        "seconds_remaining": 8,
+    }
+    game["next_round_at"] = time.monotonic() + 8
+    socketio.emit("acerte_tempo_result", game["result"], to=room["code"])
+    broadcast_room(room)
+    socketio.start_background_task(start_next_acerte_tempo_round, room, game)
+
+
+def start_next_acerte_tempo_round(room, finished_game):
+    socketio.sleep(max(0, finished_game["next_round_at"] - time.monotonic()))
+    if (
+        room.get("acerte_tempo") is finished_game
+        and room.get("current_game") == "acerte_tempo"
+        and room.get("game_phase") == "acerte_tempo_finished"
+        and room.get("players")
+    ):
+        admit_waiting_players(room)
+        start_acerte_tempo(room)
+
+
+@socketio.on("acerte_tempo_begin")
+def acerte_tempo_begin(data):
+    room = rooms.get(data.get("code"))
+    if (
+        not room
+        or room.get("current_game") != "acerte_tempo"
+        or room.get("game_phase") != "acerte_tempo_playing"
+    ):
+        return {"ok": False, "message": "A rodada não está disponível para iniciar."}
+    if request.sid not in room["players"]:
+        return {"ok": False, "message": "Você não está nesta sala."}
+
+    game = room["acerte_tempo"]
+    if request.sid in game["guesses"]:
+        return {"ok": False, "message": "Seu tempo já foi confirmado."}
+    if request.sid in game["timer_starts"]:
+        return {"ok": True, "running": True}
+
+    game["timer_starts"][request.sid] = time.monotonic()
+    return {"ok": True}
+
+
+@socketio.on("acerte_tempo_stop")
+def acerte_tempo_stop(data):
+    room = rooms.get(data.get("code"))
+    if (
+        not room
+        or room.get("current_game") != "acerte_tempo"
+        or room.get("game_phase") != "acerte_tempo_playing"
+    ):
+        return {"ok": False, "message": "A rodada não está disponível para parar."}
+    if request.sid not in room["players"]:
+        return {"ok": False, "message": "Você não está nesta sala."}
+
+    game = room["acerte_tempo"]
+    if request.sid in game["guesses"]:
+        return {"ok": True, "submitted": True, "elapsed": game["guesses"][request.sid]}
+
+    started_at = game["timer_starts"].get(request.sid)
+    if started_at is None:
+        return {"ok": False, "message": "Toque em iniciar antes de parar o cronômetro."}
+
+    elapsed = round(time.monotonic() - started_at, 3)
+    game["guesses"][request.sid] = elapsed
+    socketio.emit(
+        "acerte_tempo_progress",
+        {"submitted": len(game["guesses"]), "total": len(room["players"])},
+        to=room["code"],
+    )
+
+    if len(game["guesses"]) == len(room["players"]):
+        finish_acerte_tempo_round(room)
+    return {"ok": True, "elapsed": elapsed}
+
+
+def start_duvide(room):
+    """Inicia o mini-jogo Duvide: cada jogador chuta um tempo em segundos,
+    mas o tempo real só aparece depois do countdown oculto terminar."""
+    room["current_game"] = "duvide"
+    room["phase"] = "duvide"
+    room["game_phase"] = "duvide_waiting"
+    room["duvide"] = {
+        "status": "waiting_guesses",
+        "guesses": {},
+        "target": None,
+        "started_at": None,
+    }
+
+    socketio.emit(
+        "duvide_start",
+        {
+            "phase": "waiting_guesses",
+            "message": "Chute um tempo em segundos e envie seu palpite.",
+            "min": 1,
+            "max": 60,
+        },
+        to=room["code"],
+    )
+    broadcast_room(room)
+
+
+@socketio.on("duvide_submit_guess")
+def duvide_submit_guess(data):
+    room = rooms.get(data.get("code"))
+    if not room or room.get("current_game") != "duvide":
+        return
+
+    if request.sid not in room["players"]:
+        return
+
+    d = room.get("duvide") or {}
+    if d.get("status") != "waiting_guesses":
+        return
+
+    try:
+        guess = int(data.get("guess"))
+    except (TypeError, ValueError):
+        emit("error_message", {"message": "Digite um número válido de segundos."})
+        return
+
+    if guess < 1 or guess > 60:
+        emit("error_message", {"message": "O tempo deve estar entre 1 e 60 segundos."})
+        return
+
+    d["guesses"][request.sid] = guess
+    socketio.emit(
+        "duvide_guess_status",
+        {
+            "player": room["players"][request.sid]["name"],
+            "guess": guess,
+            "count": len(d["guesses"]),
+            "total": len(room["players"]),
+        },
+        to=room["code"],
+    )
+
+    if len(d["guesses"]) == len(room["players"]):
+        target = random.randint(3, 30)
+        d["status"] = "running"
+        d["target"] = target
+        d["started_at"] = time.time()
+
+        socketio.emit(
+            "duvide_hidden_timer",
+            {
+                "phase": "running",
+                "message": "Tempo escondido em execução. Não revele o relógio na tela.",
+                "target": target,
+            },
+            to=room["code"],
+        )
+
+        socketio.start_background_task(_finish_duvide_round, room)
+
+
+def _finish_duvide_round(room):
+    d = room.get("duvide") or {}
+    if not d:
+        return
+
+    target = d.get("target")
+    if target is None:
+        return
+
+    time.sleep(max(1, int(target)))
+
+    results = []
+    best = None
+    for sid, guess in d.get("guesses", {}).items():
+        diff = abs(int(guess) - int(target))
+        if best is None or diff < best:
+            best = diff
+        results.append({
+            "player": room["players"][sid]["name"],
+            "guess": int(guess),
+            "difference": diff,
+        })
+
+    ranking = sorted(results, key=lambda item: (item["difference"], -item["guess"]))
+    for item in ranking:
+        player_name = item["player"]
+        sid = next((k for k, p in room["players"].items() if p["name"] == player_name), None)
+        if sid is None:
+            continue
+        if item["difference"] == best:
+            room["players"][sid]["score"] += 3
+        else:
+            room["players"][sid]["score"] += max(0, 2 - item["difference"])
+
+    room["duvide"] = {
+        "status": "finished",
+        "guesses": d.get("guesses", {}),
+        "target": target,
+        "results": ranking,
+    }
+
+    socketio.emit(
+        "duvide_result",
+        {
+            "target": target,
+            "results": ranking,
+            "winner": ranking[0]["player"] if ranking else None,
+            "scores": [
+                {"name": p["name"], "score": p["score"]}
+                for p in room["players"].values()
+            ],
+        },
+        to=room["code"],
+    )
+
+    room["current_game"] = None
+    room["game_phase"] = None
+    broadcast_room(room)
+    broadcast_rooms_list()
 
 
 # ==========================================================
@@ -1727,4 +2179,3 @@ if __name__ == "__main__":
         port=5000,
         debug=True
     )
-
