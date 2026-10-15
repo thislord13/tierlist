@@ -11,22 +11,60 @@
   <header>
     <div class="logo"></div>
     <div id="roomLabel"></div>
-    <div style="margin-left:12px">
+    <div class="room-header-actions">
       <button id="returnLobbyBtn" class="secondary" onclick="requestReturnToLobby()" style="display:none">Voltar ao início</button>
+      <button id="leaveRoomBtn" class="secondary leave-room-button" type="button" onclick="leaveCurrentRoom()" title="Sair da sala" aria-label="Sair da sala" style="display:none">🚪</button>
+    </div>
+    <div class="account-controls">
+      {% if current_user %}
+      <form class="avatar-upload" action="{{ url_for('upload_avatar') }}" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="avatar-picker" title="Alterar foto de perfil">
+          <img class="profile-avatar" src="{{ current_user.profile_image }}" alt="Foto de {{ current_user.username }}">
+          <span>Alterar foto</span>
+          <input type="file" name="photo" accept="image/png,image/jpeg,image/webp,image/gif" onchange="this.form.submit()" aria-label="Selecionar nova foto de perfil">
+        </label>
+      </form>
+      <span class="account-name">{{ current_user.username }}</span>
+      <form action="{{ url_for('logout') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="secondary account-button" type="submit">Sair</button>
+      </form>
+      {% endif %}
     </div>
   </header>
+  {% if login_failed %}<p class="auth-notice" role="alert">Não foi possível concluir o login com Discord. Tente novamente.</p>{% endif %}
   <script>window.GAME_CATALOG = {{ game_catalog|tojson }};</script>
   <main>    <section id="home" class="screen active">
       <div class="card hero">
         <h1>Descubra o Tier.</h1>
         <p>Escreva algo. Seus amigos tentam descobrir se é S, A, B, C ou F.</p>
         <input id="nameInput" maxlength="20" placeholder="Seu nome">
+        {% if not current_user %}
+        <a class="discord-login home-discord-login" href="{{ url_for('discord_login') }}">Entrar com Discord</a>
+        {% endif %}
         <div class="row">
           <button onclick="createRoom()">Criar sala</button>
           <button class="secondary" onclick="showJoin()">Entrar em sala</button>
-          <button class="secondary" type="button" onclick="window.location.href='{{ url_for('monopoli_entry') }}'">Jogar Monopoli</button>
         </div>
-        <div id="roomsList" class="card small"></div>
+        <div class="room-browser">
+          <h2>Procurar salas</h2>
+          <input id="roomSearch" type="search" placeholder="Buscar pelo nome da sala" oninput="filterRooms()">
+          <div id="roomsList" class="room-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="create" class="screen">
+      <div class="card center room-setup">
+        <h2>Criar sala</h2>
+        <p>Escolha um nome para sua sala. A senha é opcional.</p>
+        <label class="room-field-label" for="newRoomName">Nome da sala</label>
+        <input id="newRoomName" maxlength="40" placeholder="Ex.: Noite de jogos">
+        <label class="room-field-label" for="newRoomPassword">Senha da sala (opcional)</label>
+        <input id="newRoomPassword" type="password" maxlength="72" placeholder="Deixe vazio para sala sem senha">
+        <button onclick="submitCreateRoom()">Criar sala</button>
+        <button class="secondary" onclick="show('home')">Voltar</button>
       </div>
     </section>
 
@@ -34,7 +72,22 @@
       <div class="card">
         <h2>Entrar em sala</h2>
         <input id="joinCode" maxlength="5" placeholder="Código da sala">
-        <button onclick="joinRoom()">Entrar</button>
+        <button onclick="joinRoom()">Entrar com código</button>
+        <hr class="join-divider">
+        <h3>Ou entrar pelo nome</h3>
+        <input id="joinRoomName" maxlength="40" placeholder="Nome da sala">
+        <input id="joinRoomPassword" type="password" maxlength="72" placeholder="Senha da sala, se houver">
+        <button class="secondary" onclick="joinRoomByName()">Entrar pelo nome</button>
+        <button class="secondary" onclick="show('home')">Voltar</button>
+      </div>
+    </section>
+
+    <section id="join_password" class="screen">
+      <div class="card center">
+        <div class="pill">🔒 COM SENHA</div>
+        <h2 id="protectedRoomName"></h2>
+        <input id="protectedRoomPassword" type="password" maxlength="72" placeholder="Senha da sala" autocomplete="current-password">
+        <button onclick="joinProtectedRoom()">Entrar</button>
         <button class="secondary" onclick="show('home')">Voltar</button>
       </div>
     </section>
@@ -235,7 +288,8 @@
   </div>
 </div>
 
-<button id="returnLobbyFloating" class="secondary" onclick="requestReturnToLobby()" style="display:none;position:fixed;right:20px;bottom:20px;z-index:300;padding:12px 16px;border-radius:12px;">Voltar ao início</button>
+<button id="returnLobbyFloating" class="secondary" onclick="requestReturnToLobby()" style="display:none;position:fixed;right:84px;bottom:20px;z-index:300;padding:12px 16px;border-radius:12px;">Voltar ao início</button>
+<button id="leaveRoomFloating" class="secondary leave-room-button" type="button" onclick="leaveCurrentRoom()" title="Sair da sala" aria-label="Sair da sala" style="display:none;position:fixed;right:20px;bottom:20px;z-index:300;">🚪</button>
 
 <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <script src="{{ url_for('static', filename='app.js', v=static_version) }}"></script>

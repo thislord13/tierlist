@@ -59,10 +59,102 @@ header {
   opacity: 0.9;
 }
 
+.account-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.avatar-upload,
+.account-controls form {
+  margin: 0;
+}
+
+.avatar-picker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-main);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.profile-avatar {
+  width: 38px;
+  height: 38px;
+  border: 2px solid var(--accent-btn);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.discord-login {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 8px;
+  background: #5865f2;
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.discord-login:hover {
+  background: #4752c4;
+}
+
+.home-discord-login {
+  width: 100%;
+  justify-content: center;
+  min-height: 46px;
+  margin: -8px 0 18px;
+}
+
+.account-button {
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 14px;
+}
+
+.auth-notice {
+  width: min(900px, 92%);
+  margin: 12px auto;
+  color: #fbbf24;
+  text-align: center;
+}
+
 #roomLabel { 
   color: var(--text-muted); 
   font-weight: 600;
   font-size: 14px;
+}
+
+.room-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+}
+
+.leave-room-button {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0;
+  font-size: 20px;
 }
 
 main { 
@@ -163,6 +255,119 @@ button.secondary:hover {
   gap: 12px; 
   justify-content: center; 
   margin-top: 10px; 
+}
+
+.room-field-label {
+  display: block;
+  margin: 4px 0 -8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: left;
+}
+
+.room-browser {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--card-border);
+  text-align: left;
+}
+
+.room-browser h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.room-list {
+  display: grid;
+  gap: 10px;
+}
+
+.room-item {
+  padding: 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--input-bg);
+}
+
+.room-item-heading,
+.room-item-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.room-item-heading strong {
+  overflow-wrap: anywhere;
+}
+
+.room-lock,
+.room-item-footer span {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.room-players {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.mini-player,
+.room-player-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.mini-avatar,
+.mini-avatar-placeholder {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.mini-avatar-placeholder,
+.room-player-avatar-placeholder {
+  display: inline-grid;
+  place-items: center;
+  background: #303646;
+}
+
+.mini-avatar-placeholder {
+  font-size: 13px;
+}
+
+.room-item-footer button {
+  margin: 0;
+  padding: 8px 14px;
+}
+
+.join-divider {
+  margin: 22px 0;
+  border: 0;
+  border-top: 1px solid var(--card-border);
+}
+
+.room-player-avatar,
+.room-player-avatar-placeholder {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.room-player-avatar-placeholder {
+  display: inline-grid;
+  place-items: center;
+}
+
+.host-crown {
+  margin-left: 2px;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .room-code { 
@@ -542,6 +747,10 @@ button.secondary:hover {
 }
 
 @media (max-width: 600px) {
+  header { height: auto; min-height: 70px; padding: 10px 4%; flex-wrap: wrap; gap: 8px; }
+  #roomLabel { flex: 1; text-align: center; }
+  .account-name { display: none; }
+  .account-controls { gap: 6px; }
   main { width: 95%; margin: 20px auto; }
   h1 { font-size: 32px; }
   .card { padding: 22px 18px; }

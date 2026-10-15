@@ -44,7 +44,20 @@ python app.py
 
 Abra:
 
-http://localhost:5000
+http://127.0.0.1:5000
+
+## Login com Discord
+
+1. No [Discord Developer Portal](https://discord.com/developers/applications), crie uma aplicação e abra **OAuth2** para copiar o Client ID e gerar um Client Secret.
+2. Em **OAuth2 > Redirects**, cadastre exatamente `http://127.0.0.1:5000/login/discord/callback` para desenvolvimento local.
+3. Copie `.env.example` para `.env` e preencha `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` e `FLASK_SECRET_KEY`. Gere o segredo do Flask com `py -c "import secrets; print(secrets.token_hex(32))"`.
+4. Instale as dependências com `pip install -r requirements.txt` e inicie normalmente com `start.bat`.
+
+O usuário Discord é salvo em `instance/users.sqlite3`. A foto do Discord é usada inicialmente; após o login, clique em **Alterar foto** no cabeçalho para escolher uma imagem PNG, JPEG, WebP ou GIF de até 5 MB. O servidor valida e converte a imagem para WebP em `static/profile_uploads/`.
+
+Se `FLASK_SECRET_KEY` não estiver definida, o app gera e mantém uma chave em `instance/flask_secret_key` para que as sessões de login continuem válidas após reiniciar o servidor. Em hospedagens com disco efêmero ou múltiplas instâncias, configure a mesma `FLASK_SECRET_KEY` persistente em todas elas.
+
+Para publicar o site, configure a URL HTTPS pública em **OAuth2 > Redirects** e defina a mesma URL completa em `DISCORD_REDIRECT_URI` no `.env`. Nunca publique o arquivo `.env` nem compartilhe o Client Secret.
 
 Para outras pessoas da mesma rede acessarem, use o IP do computador, por exemplo:
 

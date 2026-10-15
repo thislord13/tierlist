@@ -1,14 +1,64 @@
-from flask import Flask, abort, redirect, render_template, request
-from flask_socketio import SocketIO, join_room, emit
-import random
-import string
-import time
+import hmac
+import os
+import secrets
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from authlib.integrations.base_client.errors import OAuthError
+from authlib.integrations.flask_client import OAuth
+from dotenv import load_dotenv
+from flask import Flask, abort, redirect, render_template, request, session, url_for
+from flask_socketio import SocketIO, join_room, leave_room as leave_socket_room, emit
+from PIL import Image, ImageOps, UnidentifiedImageError
+from werkzeug.security import check_password_hash, generate_password_hash
+import random
+import string
+import time
+
+load_dotenv()
+
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "tierlist-secret"
+
+
+def load_secret_key():
+    configured_key = os.environ.get("FLASK_SECRET_KEY")
+    if configured_key:
+        return configured_key
+
+    key_path = Path(app.instance_path, "flask_secret_key")
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with key_path.open("x", encoding="utf-8") as key_file:
+            key_file.write(secrets.token_hex(32))
+    except FileExistsError:
+        pass
+
+    secret_key = key_path.read_text(encoding="utf-8").strip()
+    if not secret_key:
+        secret_key = secrets.token_hex(32)
+        key_path.write_text(secret_key, encoding="utf-8")
+    return secret_key
+
+
+app.config["SECRET_KEY"] = load_secret_key()
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
+app.config["DISCORD_CLIENT_ID"] = os.environ.get("DISCORD_CLIENT_ID")
+app.config["DISCORD_CLIENT_SECRET"] = os.environ.get("DISCORD_CLIENT_SECRET")
+app.config["DISCORD_REDIRECT_URI"] = os.environ.get("DISCORD_REDIRECT_URI")
+
+oauth = OAuth(app)
+oauth.register(
+    name="discord",
+    client_id=app.config["DISCORD_CLIENT_ID"],
+    client_secret=app.config["DISCORD_CLIENT_SECRET"],
+    authorize_url="https://discord.com/oauth2/authorize",
+    access_token_url="https://discord.com/api/oauth2/token",
+    api_base_url="https://discord.com/api/",
+    client_kwargs={"scope": "identify email"},
+)
 
 socketio = SocketIO(
     app,
@@ -17,6 +67,133 @@ socketio = SocketIO(
 )
 
 rooms = {}
+
+
+def get_db():
+    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(Path(app.instance_path, "users.sqlite3"))
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+            discord_id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            avatar_url TEXT NOT NULL,
+            custom_avatar TEXT
+        )"""
+    )
+    return connection
+
+
+@contextmanager
+def database():
+    connection = get_db()
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def current_user():
+    discord_id = session.get("discord_id")
+    if not discord_id:
+        return None
+
+    with database() as connection:
+        row = connection.execute(
+            "SELECT * FROM users WHERE discord_id = ?", (discord_id,)
+        ).fetchone()
+
+    if not row:
+        session.pop("discord_id", None)
+        return None
+
+    user = dict(row)
+    user["profile_image"] = (
+        url_for("static", filename=user["custom_avatar"])
+        if user["custom_avatar"]
+        else user["avatar_url"]
+    )
+    return user
+
+
+def csrf_token():
+    return session.setdefault("csrf_token", secrets.token_urlsafe(32))
+
+
+def valid_csrf_token(token):
+    expected = session.get("csrf_token", "")
+    return bool(expected and token and hmac.compare_digest(expected, token))
+
+
+def replace_sid_references(value, old_sid, new_sid):
+    if isinstance(value, dict):
+        if old_sid in value:
+            value[new_sid] = value.pop(old_sid)
+        for key, item in list(value.items()):
+            if item == old_sid:
+                value[key] = new_sid
+            else:
+                replace_sid_references(item, old_sid, new_sid)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if item == old_sid:
+                value[index] = new_sid
+            else:
+                replace_sid_references(item, old_sid, new_sid)
+
+
+def remove_player_from_room(room_code, sid):
+    room = rooms.get(room_code)
+    if not room:
+        return
+
+    if sid in room.get("waiting_players", {}):
+        del room["waiting_players"][sid]
+        broadcast_room(room)
+        broadcast_rooms_list()
+        return
+
+    if sid not in room["players"]:
+        return
+
+    del room["players"][sid]
+    room.get("previews", {}).pop(sid, None)
+    room.get("confirmed_votes", {}).pop(sid, None)
+    room.get("votes", {}).pop(sid, None)
+    room.get("acerte_tempo", {}).get("guesses", {}).pop(sid, None)
+    room.get("acerte_tempo", {}).get("timer_starts", {}).pop(sid, None)
+    room.get("themes", {}).pop(sid, None)
+
+    if not room["players"]:
+        if room.get("current_game") == "acerte_tempo" and room.get("waiting_players"):
+            admit_waiting_players(room)
+            start_acerte_tempo(room)
+        else:
+            del rooms[room_code]
+        return
+
+    if room["host"] == sid:
+        room["host"] = next(iter(room["players"]))
+
+    if (
+        room.get("current_game") == "acerte_tempo"
+        and room.get("game_phase") == "acerte_tempo_playing"
+        and room["players"]
+        and len(room["acerte_tempo"]["guesses"]) == len(room["players"])
+    ):
+        finish_acerte_tempo_round(room)
+
+    if (
+        room.get("turn") == sid
+        and room.get("started")
+        and room.get("phase") not in ["finished", "themes"]
+        and room["turn_number"] < room.get("total_turns", 0)
+    ):
+        start_turn(room)
+
+    broadcast_room(room)
+    broadcast_rooms_list()
 
 TIERS = ["S", "A", "B", "C", "F"]
 
@@ -49,15 +226,17 @@ def code():
             return c
 
 
-def public_room(room):
-    return {
-        "code": room["code"],
+def public_room(room, include_code=True):
+    public_data = {
+        "name": room.get("name", "Sala"),
+        "has_password": bool(room.get("password_hash")),
         "host": room["host"],
         "players": [
             {
                 "id": p["id"],
                 "name": p["name"],
-                "score": p.get("score", 0)
+                "score": p.get("score", 0),
+                "avatar": p.get("avatar"),
             }
             for p in room["players"].values()
         ],
@@ -82,6 +261,9 @@ def public_room(room):
             else None
         ),
     }
+    if include_code:
+        public_data["code"] = room["code"]
+    return public_data
 
 
 def broadcast_room(room):
@@ -98,7 +280,7 @@ def broadcast_rooms_list():
     """
     socketio.emit(
         "rooms_list",
-        [public_room(r) for r in rooms.values()]
+        [public_room(r, include_code=False) for r in rooms.values()]
     )
 
 
@@ -328,7 +510,99 @@ def index():
         "index.html",
         game_catalog=GAME_CATALOG,
         static_version=static_version,
+        current_user=current_user(),
+        csrf_token=csrf_token(),
+        login_failed=request.args.get("login") == "failed",
     )
+
+
+@app.route("/login/discord")
+def discord_login():
+    if not app.config["DISCORD_CLIENT_ID"] or not app.config["DISCORD_CLIENT_SECRET"]:
+        abort(503, description="Configure DISCORD_CLIENT_ID e DISCORD_CLIENT_SECRET no arquivo .env.")
+
+    redirect_uri = app.config["DISCORD_REDIRECT_URI"] or url_for(
+        "discord_callback", _external=True
+    )
+    return oauth.discord.authorize_redirect(redirect_uri)
+
+
+@app.route("/login/discord/callback")
+def discord_callback():
+    try:
+        oauth.discord.authorize_access_token()
+        profile = oauth.discord.get("users/@me").json()
+    except OAuthError:
+        return redirect(url_for("index", login="failed"))
+
+    discord_id = str(profile.get("id", ""))
+    if not discord_id:
+        abort(502, description="O Discord não retornou um identificador de usuário válido.")
+
+    avatar_hash = profile.get("avatar")
+    if avatar_hash:
+        image_format = "gif" if avatar_hash.startswith("a_") else "png"
+        avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.{image_format}?size=128"
+    else:
+        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{int(discord_id) % 6}.png"
+
+    username = profile.get("global_name") or profile.get("username") or "Jogador"
+    with database() as connection:
+        connection.execute(
+            """INSERT INTO users (discord_id, username, avatar_url)
+               VALUES (?, ?, ?)
+               ON CONFLICT(discord_id) DO UPDATE SET
+                   username = excluded.username,
+                   avatar_url = excluded.avatar_url""",
+            (discord_id, username[:100], avatar_url),
+        )
+
+    session.clear()
+    session["discord_id"] = discord_id
+    return redirect(url_for("index"))
+
+
+@app.route("/profile/avatar", methods=["POST"])
+def upload_avatar():
+    user = current_user()
+    if not user:
+        abort(401)
+    if not valid_csrf_token(request.form.get("csrf_token")):
+        abort(400, description="Token de segurança inválido. Atualize a página e tente novamente.")
+
+    photo = request.files.get("photo")
+    if not photo or not photo.filename:
+        abort(400, description="Selecione uma imagem para enviar.")
+
+    upload_directory = Path(app.static_folder, "profile_uploads")
+    upload_directory.mkdir(parents=True, exist_ok=True)
+    avatar_filename = f"profile_uploads/{user['discord_id']}.webp"
+    avatar_path = Path(app.static_folder, avatar_filename)
+
+    try:
+        image = Image.open(photo.stream)
+        image.verify()
+        photo.stream.seek(0)
+        image = ImageOps.exif_transpose(Image.open(photo.stream)).convert("RGBA")
+        image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        image.save(avatar_path, format="WEBP", quality=88)
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
+        abort(400, description="O arquivo enviado não é uma imagem válida.")
+
+    with database() as connection:
+        connection.execute(
+            "UPDATE users SET custom_avatar = ? WHERE discord_id = ?",
+            (avatar_filename, user["discord_id"]),
+        )
+    return redirect(url_for("index"))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    if not valid_csrf_token(request.form.get("csrf_token")):
+        abort(400, description="Token de segurança inválido.")
+    session.clear()
+    return redirect(url_for("index"))
 
 
 @app.route("/monopoli")
@@ -350,12 +624,25 @@ def monopoli_entry():
 def create_room(data):
 
     name = (data.get("name") or "Jogador").strip()[:20]
+    room_name = (data.get("room_name") or "").strip()[:40] or name
+    password = (data.get("password") or "").strip()
+    if any(room.get("name", "").casefold() == room_name.casefold() for room in rooms.values()):
+        emit("error_message", {"message": "Já existe uma sala com esse nome. Escolha outro nome."})
+        return
+    if len(password) > 72:
+        emit("error_message", {"message": "A senha da sala deve ter até 72 caracteres."})
+        return
+
+    user = current_user()
+    avatar = user["profile_image"] if user else None
 
     room_code = code()
 
     rooms[room_code] = {
 
         "code": room_code,
+        "name": room_name,
+        "password_hash": generate_password_hash(password) if password else None,
 
         "host": request.sid,
 
@@ -364,7 +651,8 @@ def create_room(data):
                 "id": request.sid,
                 "name": name,
                 "score": 0,
-                "token": data.get("token")
+                "token": data.get("token"),
+                "avatar": avatar,
             }
         },
 
@@ -416,7 +704,8 @@ def create_room(data):
     emit(
         "room_created",
         {
-            "code": room_code
+            "code": room_code,
+            "name": room_name,
         }
     )
     emit("chat_history", {"messages": []}, to=request.sid)
@@ -448,6 +737,8 @@ def join(data):
         return
 
     room = rooms[room_code]
+    user = current_user()
+    avatar = user["profile_image"] if user else None
 
     waiting_for_round = False
     intermission = False
@@ -495,7 +786,8 @@ def join(data):
         "id": request.sid,
         "name": name,
         "score": 0,
-        "token": data.get("token")
+        "token": data.get("token"),
+        "avatar": avatar,
     }
 
     if waiting_for_round:
@@ -509,6 +801,7 @@ def join(data):
         "joined",
         {
             "code": room_code,
+            "name": room.get("name", "Sala"),
             "waiting": waiting_for_round,
             "intermission": intermission,
             "game": room.get("current_game"),
@@ -565,9 +858,163 @@ def list_rooms():
     """Envia a lista pública de salas para o cliente que pediu."""
     socketio.emit(
         "rooms_list",
-        [public_room(r) for r in rooms.values()],
+        [public_room(r, include_code=False) for r in rooms.values()],
         to=request.sid
     )
+
+
+@socketio.on("join_room_by_name")
+def join_room_by_name(data):
+    requested_name = (data.get("room_name") or "").strip().casefold()
+    password = (data.get("password") or "").strip()
+
+    candidates = [
+        room for room in rooms.values()
+        if room.get("name", "").casefold() == requested_name
+    ]
+    if not candidates:
+        emit("error_message", {"message": "Nenhuma sala disponível com esse nome."})
+        return
+
+    room = next(
+        (candidate for candidate in candidates if not candidate.get("password_hash")),
+        None,
+    )
+    if room is None:
+        room = next(
+            (
+                candidate for candidate in candidates
+                if candidate.get("password_hash")
+                and check_password_hash(candidate["password_hash"], password)
+            ),
+            None,
+        )
+    if room is None:
+        emit("error_message", {"message": "Senha incorreta ou necessária para essa sala."})
+        return
+
+    data = dict(data)
+    data["code"] = room["code"]
+    join(data)
+
+
+@socketio.on("resume_player")
+def resume_player(data):
+    room_code = (data.get("code") or "").upper().strip()
+    token = data.get("token")
+    room = rooms.get(room_code)
+    if not room or not token:
+        emit("resume_failed")
+        return
+
+    collection_name = "players"
+    player_collection = room.get(collection_name, {})
+    old_sid = next(
+        (sid for sid, player in player_collection.items() if player.get("token") == token),
+        None,
+    )
+    if old_sid is None:
+        collection_name = "waiting_players"
+        player_collection = room.get(collection_name, {})
+        old_sid = next(
+            (sid for sid, player in player_collection.items() if player.get("token") == token),
+            None,
+        )
+
+    if old_sid is None:
+        emit("resume_failed")
+        return
+
+    player = player_collection.pop(old_sid)
+    player["id"] = request.sid
+    player.pop("disconnected_at", None)
+    player_collection[request.sid] = player
+    replace_sid_references(room, old_sid, request.sid)
+    join_room(room_code)
+
+    emit(
+        "resumed",
+        {
+            "code": room_code,
+            "name": room.get("name", "Sala"),
+            "waiting": collection_name == "waiting_players",
+        },
+    )
+    emit("chat_history", {"messages": room.get("chat_messages", [])}, to=request.sid)
+    broadcast_room(room)
+
+    if collection_name == "waiting_players":
+        emit(
+            "waiting_room_update",
+            {
+                "players_waiting": len(room.get("waiting_players", {})),
+                "message": "Você está na sala de espera e será incluído na próxima rodada.",
+            },
+            to=request.sid,
+        )
+    elif room.get("phase") == "writing":
+        if room.get("turn") == request.sid:
+            emit(
+                "your_turn",
+                {
+                    "theme": room.get("theme"),
+                    "tier": room.get("secret_tier"),
+                    "turn_number": room.get("turn_number", 0),
+                },
+                to=request.sid,
+            )
+        else:
+            current_player = room.get("players", {}).get(room.get("turn"), {})
+            emit(
+                "waiting_turn",
+                {
+                    "theme": room.get("theme"),
+                    "player": current_player.get("name", "Jogador"),
+                    "turn_number": room.get("turn_number", 0),
+                },
+                to=request.sid,
+            )
+    elif room.get("phase") == "voting":
+        author = room.get("players", {}).get(room.get("turn"), {})
+        emit(
+            "show_answer",
+            {
+                "answer": room.get("answer"),
+                "author": author.get("name", "Jogador"),
+                "theme": room.get("theme"),
+                "voters_total": max(0, len(room.get("players", {})) - 1),
+            },
+            to=request.sid,
+        )
+        for sid, tier in room.get("previews", {}).items():
+            voter = room["players"].get(sid)
+            if voter:
+                emit("vote_update", {"player_id": sid, "player": voter["name"], "tier": tier, "votes": len(room.get("votes", {})), "total": max(0, len(room["players"]) - 1), "preview": True}, to=request.sid)
+        for sid, tier in room.get("votes", {}).items():
+            voter = room["players"].get(sid)
+            if voter:
+                emit("vote_update", {"player_id": sid, "player": voter["name"], "tier": tier, "votes": len(room.get("votes", {})), "total": max(0, len(room["players"]) - 1)}, to=request.sid)
+    elif room.get("phase") == "result" and room.get("round_result"):
+        result = dict(room["round_result"])
+        result["seconds_remaining"] = max(
+            0,
+            int((room.get("round_result_deadline") or time.monotonic()) - time.monotonic() + 0.999),
+        )
+        emit("round_result", result, to=request.sid)
+
+
+@socketio.on("leave_room")
+def leave_current_room(data):
+    room_code = (data.get("code") or "").upper().strip()
+    room = rooms.get(room_code)
+    if room and (
+        request.sid in room.get("players", {})
+        or request.sid in room.get("waiting_players", {})
+    ):
+        leave_socket_room(room_code)
+        remove_player_from_room(room_code, request.sid)
+        broadcast_rooms_list()
+    emit("left_room")
 
 
 @socketio.on("chat_send")
@@ -1499,74 +1946,41 @@ def next_turn(data):
 
 @socketio.on("disconnect")
 def disconnect():
-
     for room_code, room in list(rooms.items()):
-
-        if request.sid in room.get("waiting_players", {}):
-            del room["waiting_players"][request.sid]
-            broadcast_room(room)
-            broadcast_rooms_list()
+        player = room.get("players", {}).get(request.sid)
+        if not player:
+            player = room.get("waiting_players", {}).get(request.sid)
+        if not player:
             continue
 
-        if request.sid not in room["players"]:
-            continue
-
-        # Remove jogador
-        del room["players"][request.sid]
-
-        # Remove any previews or confirmed votes from this player
-        room.get("previews", {}).pop(request.sid, None)
-        room.get("confirmed_votes", {}).pop(request.sid, None)
-        room.get("votes", {}).pop(request.sid, None)
-        room.get("acerte_tempo", {}).get("guesses", {}).pop(request.sid, None)
-        room.get("acerte_tempo", {}).get("timer_starts", {}).pop(request.sid, None)
-
-        # Remove tema dele
-        room["themes"].pop(request.sid, None)
-
-        # Se não houver mais jogadores
-        if not room["players"]:
-            if room.get("current_game") == "acerte_tempo" and room.get("waiting_players"):
-                admit_waiting_players(room)
-                start_acerte_tempo(room)
-            else:
-                del rooms[room_code]
-            continue
-
-        # Se o host saiu
-        if room["host"] == request.sid:
-
-            room["host"] = next(
-                iter(room["players"])
-            )
-
-        if (
-            room.get("current_game") == "acerte_tempo"
-            and room.get("game_phase") == "acerte_tempo_playing"
-            and room["players"]
-            and len(room["acerte_tempo"]["guesses"]) == len(room["players"])
-        ):
-            finish_acerte_tempo_round(room)
-
-        # Se o jogador que estava respondendo saiu
-        if (
-            room.get("turn") == request.sid
-            and room.get("started")
-            and room.get("phase") not in [
-                "finished",
-                "themes"
-            ]
-        ):
-
-            if (
-                room["turn_number"]
-                < room.get("total_turns", 0)
-            ):
-
-                start_turn(room)
-
+        disconnected_at = time.time()
+        player["disconnected_at"] = disconnected_at
+        socketio.start_background_task(
+            expire_disconnected_player,
+            room_code,
+            request.sid,
+            player.get("token"),
+            disconnected_at,
+        )
         broadcast_room(room)
         broadcast_rooms_list()
+
+
+def expire_disconnected_player(room_code, sid, token, disconnected_at):
+    socketio.sleep(120)
+    room = rooms.get(room_code)
+    if not room:
+        return
+
+    for collection_name in ("players", "waiting_players"):
+        player = room.get(collection_name, {}).get(sid)
+        if (
+            player
+            and player.get("token") == token
+            and player.get("disconnected_at") == disconnected_at
+        ):
+            remove_player_from_room(room_code, sid)
+            return
 
 
 # ==========================================================

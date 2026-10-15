@@ -4,6 +4,8 @@ let roomCode = null;
 let isHost = false;
 let myTurn = false;
 let selectedVoteTier = null;
+let availableRooms = [];
+let protectedRoomName = "";
 
 // Pequenas funções para ler/gravar cookies
 function getCookie(name) {
@@ -37,6 +39,14 @@ if (savedName) {
 function show(id) {
   document.querySelectorAll(".screen").forEach(x => x.classList.remove("active"));
   document.getElementById(id).classList.add("active");
+  if (localStorage.getItem("active_room_code")) {
+    localStorage.setItem("active_room_screen", id);
+  }
+}
+
+const savedRoomCode = localStorage.getItem("active_room_code");
+if (savedRoomCode) {
+  show(localStorage.getItem("active_room_screen") || "lobby");
 }
 
 function error(msg) {
@@ -89,9 +99,19 @@ function name() {
 }
 
 function createRoom() {
+  document.getElementById("newRoomName").value = "";
+  document.getElementById("newRoomPassword").value = "";
+  show("create");
+  document.getElementById("newRoomName").focus();
+}
+
+function submitCreateRoom() {
   const n = name();
   setCookie('player_name', n, 365);
-  socket.emit("create_room", {name: n, token: playerToken});
+  const roomName = document.getElementById("newRoomName").value.trim();
+  const password = document.getElementById("newRoomPassword").value;
+  if (!roomName) return error("Digite um nome para a sala.");
+  socket.emit("create_room", {name: n, room_name: roomName, password, token: playerToken});
 }
 
 function showJoin() {
@@ -106,19 +126,105 @@ function joinRoom() {
   socket.emit("join_room", {name: n, code, token: playerToken});
 }
 
-socket.on("connect", () => { myId = socket.id; socket.emit('list_rooms'); });
+function joinRoomByName() {
+  const roomName = document.getElementById("joinRoomName").value.trim();
+  if (!roomName) return error("Digite o nome da sala.");
+  submitJoinByName(roomName, document.getElementById("joinRoomPassword").value);
+}
+
+function joinProtectedRoom() {
+  const password = document.getElementById("protectedRoomPassword").value;
+  if (!password) return error("Digite a senha da sala.");
+  submitJoinByName(protectedRoomName, password);
+}
+
+function submitJoinByName(roomName, password = "") {
+  const n = name();
+  setCookie('player_name', n, 365);
+  socket.emit("join_room_by_name", {
+    name: n,
+    room_name: roomName,
+    password,
+    token: playerToken
+  });
+}
+
+function renderRoomList() {
+  const el = document.getElementById("roomsList");
+  const query = (document.getElementById("roomSearch")?.value || "").trim().toLocaleLowerCase();
+  const filteredRooms = availableRooms.filter(room => room.name.toLocaleLowerCase().includes(query));
+  if (!filteredRooms.length) {
+    el.innerHTML = '<p>Nenhuma sala encontrada.</p>';
+    return;
+  }
+
+  el.innerHTML = filteredRooms.map(room => {
+    const players = (room.players || []).map(player => {
+      const avatar = player.avatar
+        ? `<img class="mini-avatar" src="${escapeHtml(player.avatar)}" alt="">`
+        : '<span class="mini-avatar-placeholder">👤</span>';
+      return `<span class="mini-player">${avatar}${escapeHtml(player.name)}</span>`;
+    }).join("");
+    const lock = room.has_password ? '<span class="room-lock" aria-label="Sala protegida por senha">Com senha</span>' : '';
+    return `<article class="room-item">
+      <div class="room-item-heading"><strong>${escapeHtml(room.name)}</strong>${lock}</div>
+      <div class="room-players">${players}</div>
+      <div class="room-item-footer"><span>${room.players.length} jogador(es)</span><button type="button" data-room-name="${escapeHtml(room.name)}" data-has-password="${room.has_password ? "true" : "false"}">Entrar</button></div>
+    </article>`;
+  }).join("");
+}
+
+function filterRooms() {
+  renderRoomList();
+}
+
+document.getElementById("roomsList").addEventListener("click", event => {
+  const button = event.target.closest("button[data-room-name]");
+  if (!button) return;
+  if (button.dataset.hasPassword !== "true") {
+    submitJoinByName(button.dataset.roomName);
+    return;
+  }
+  protectedRoomName = button.dataset.roomName;
+  document.getElementById("protectedRoomName").textContent = protectedRoomName;
+  document.getElementById("protectedRoomPassword").value = "";
+  show("join_password");
+  document.getElementById("protectedRoomPassword").focus();
+});
+
+socket.on("connect", () => {
+  myId = socket.id;
+  const savedCode = localStorage.getItem("active_room_code");
+  if (savedCode) {
+    socket.emit("resume_player", {code: savedCode, token: playerToken});
+  } else {
+    socket.emit("list_rooms");
+  }
+});
+
+function rememberRoom(code, screen = "lobby") {
+  roomCode = code;
+  localStorage.setItem("active_room_code", code);
+  localStorage.setItem("active_room_screen", screen);
+}
+
+function forgetRoom() {
+  localStorage.removeItem("active_room_code");
+  localStorage.removeItem("active_room_screen");
+  roomCode = null;
+}
 
 socket.on("room_created", data => {
-  roomCode = data.code;
-  document.getElementById("roomLabel").textContent = "Sala " + roomCode;
+  rememberRoom(data.code);
+  document.getElementById("roomLabel").textContent = `${data.name} · ${roomCode}`;
   document.getElementById("codeBig").textContent = roomCode;
   show("lobby");
   enableRoomChat([]);
 });
 
 socket.on("joined", data => {
-  roomCode = data.code;
-  document.getElementById("roomLabel").textContent = "Sala " + roomCode;
+  rememberRoom(data.code, data.waiting ? "room_waiting" : "lobby");
+  document.getElementById("roomLabel").textContent = `${data.name} · ${roomCode}`;
   window.waitingForRound = Boolean(data.waiting);
   if (data.waiting) {
     show("room_waiting");
@@ -129,6 +235,35 @@ socket.on("joined", data => {
     show("lobby");
   }
   enableRoomChat([]);
+});
+
+socket.on("resumed", data => {
+  rememberRoom(data.code, data.waiting ? "room_waiting" : (localStorage.getItem("active_room_screen") || "lobby"));
+  document.getElementById("roomLabel").textContent = `${data.name} · ${data.code}`;
+  document.getElementById("codeBig").textContent = data.code;
+  window.waitingForRound = Boolean(data.waiting);
+  if (data.waiting) show("room_waiting");
+  enableRoomChat([]);
+});
+
+socket.on("resume_failed", () => {
+  forgetRoom();
+  show("home");
+  socket.emit("list_rooms");
+});
+
+socket.on("left_room", () => {
+  forgetRoom();
+  window.currentRoom = null;
+  window.waitingForRound = false;
+  document.getElementById("roomLabel").textContent = "";
+  document.getElementById("roomChat").style.display = "none";
+  document.getElementById("returnLobbyBtn").style.display = "none";
+  document.getElementById("leaveRoomBtn").style.display = "none";
+  document.getElementById("returnLobbyFloating").style.display = "none";
+  document.getElementById("leaveRoomFloating").style.display = "none";
+  show("home");
+  socket.emit("list_rooms");
 });
 
 socket.on("error_message", data => error(data.message));
@@ -189,12 +324,16 @@ socket.on("room_update", room => {
     );
     show("acerte_tempo");
   }
-  document.getElementById("roomLabel").textContent = "Sala " + room.code;
+  document.getElementById("roomLabel").textContent = `${room.name} · ${room.code}`;
   document.getElementById("codeBig").textContent = room.code;
 
-  document.getElementById("players").innerHTML = room.players.map(p =>
-    `<div class="player"><span>👤 ${escapeHtml(p.name)}</span> <b>${p.score || 0} pts</b></div>`
-  ).join("");
+  document.getElementById("players").innerHTML = room.players.map(p => {
+    const avatar = p.avatar
+      ? `<img class="room-player-avatar" src="${escapeHtml(p.avatar)}" alt="">`
+      : '<span class="room-player-avatar-placeholder">👤</span>';
+    const crown = room.host === p.id ? '<span class="host-crown" title="Anfitrião" aria-label="Anfitrião">👑</span>' : '';
+    return `<div class="player"><span class="room-player-name">${avatar}${escapeHtml(p.name)}${crown}</span> <b>${p.score || 0} pts</b></div>`;
+  }).join("");
 
   // Atualiza sidebar de placar (se existir)
   if (typeof updateScoreSidebar === 'function') updateScoreSidebar(room);
@@ -202,11 +341,17 @@ socket.on("room_update", room => {
   // Mostrar/ocultar botão de retorno ao lobby (header + floating) durante a partida
   const rb = document.getElementById('returnLobbyBtn');
   const rf = document.getElementById('returnLobbyFloating');
+  const leaveHeader = document.getElementById('leaveRoomBtn');
+  const leaveFloating = document.getElementById('leaveRoomFloating');
   const riV = document.getElementById('returnLobbyInlineVoting');
   const riW = document.getElementById('returnLobbyInlineWaiting');
   if (rb) rb.style.display = room.started ? 'inline-block' : 'none';
+  if (leaveHeader) leaveHeader.style.display = 'inline-grid';
   if (rf) {
     rf.style.display = room.started && room.current_game !== "acerte_tempo" ? 'inline-block' : 'none';
+  }
+  if (leaveFloating) {
+    leaveFloating.style.display = room.started && room.current_game !== "acerte_tempo" ? 'inline-grid' : 'none';
   }
   if (riV) riV.style.display = room.started ? 'inline-block' : 'none';
   if (riW) riW.style.display = room.started ? 'inline-block' : 'none';
@@ -226,23 +371,8 @@ socket.on("room_update", room => {
 
 // Atualização da lista de salas públicas
 socket.on("rooms_list", rooms => {
-  const el = document.getElementById("roomsList");
-  if (!el) return;
-  if (!rooms || rooms.length === 0) {
-    el.innerHTML = '<p>Nenhuma sala disponível.</p>';
-    return;
-  }
-
-  el.innerHTML = rooms.map(r => {
-    const players = (r.players || []).map(p => `<span class="mini-player">👤 ${escapeHtml(p.name)}</span>`).join(' ');
-    return `
-      <div class="room-item">
-        <div><strong>${r.code}</strong> — ${r.players.length} jogador(s)</div>
-        <div class="room-players">${players}</div>
-        <div><button onclick="document.getElementById('joinCode').value='${r.code}'; show('join');">Entrar</button></div>
-      </div>
-    `;
-  }).join('');
+  availableRooms = rooms || [];
+  renderRoomList();
 });
 
 socket.on("theme_status", data => {
@@ -445,6 +575,11 @@ function submitTheme() {
 function requestReturnToLobby() {
   if (!roomCode) return;
   socket.emit("request_return_to_lobby", {code: roomCode});
+}
+
+function leaveCurrentRoom() {
+  if (!roomCode) return;
+  socket.emit("leave_room", {code: roomCode});
 }
 
 function voteReturnToLobby(choice) {
