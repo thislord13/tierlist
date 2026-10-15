@@ -3,3 +3,4 @@ instance/
 static/profile_uploads/
 __pycache__/
 *.py[cod]
+.venv-linux/
